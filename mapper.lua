@@ -56,6 +56,41 @@ function MudMapper.area_id(name)
   return addAreaName(n)
 end
 
+-- является ли команда входом в портал (enter / войти, с аргументом или без)
+function MudMapper.is_portal_cmd(cmd)
+  if not cmd then return nil end
+  local c = string.lower(string.trim(cmd))
+  -- string.lower не трогает кириллицу — приводим первую «В» вручную
+  c = c:gsub("^В", "в")
+  if c == "войти" or c:match("^войти%s+%S") or c == "enter" or c:match("^enter%s+%S") then
+    return string.trim(cmd)
+  end
+  return nil
+end
+
+-- разместить комнату в своей зоне (справа от самой правой комнаты зоны)
+function MudMapper.place_in_area(room_id, area_id)
+  local rooms = getAreaRooms(area_id) or {}
+  local best, bx, by, bz
+  for _, id in ipairs(rooms) do
+    if id ~= room_id then
+      local x, y, z = getRoomCoordinates(id)
+      if not best or x > bx then
+        best, bx, by, bz = id, x, y, z
+      end
+    end
+  end
+  local nx, ny, nz
+  if best then
+    nx, ny, nz = bx + 1, by, bz
+    setRoomCoordinates(room_id, nx, ny, nz)
+  else
+    nx, ny, nz = 0, 0, 0
+    setRoomCoordinates(room_id, 0, 0, 0)
+  end
+  MudMapper.dbg("[place] room=" .. tostring(room_id) .. " -> (" .. tostring(nx) .. "," .. tostring(ny) .. "," .. tostring(nz) .. ")" .. (best and (" справа от " .. tostring(best)) or " (зона пуста)"))
+end
+
 -- печать сообщений в стиле generic_mapper
 MudMapper.tag = "<112,229,0>(<73,149,0>MudMapper<112,229,0>): <255,255,255>"
 function MudMapper.echo(msg)
@@ -99,7 +134,8 @@ end
 
 -- диагностика отправленных команд (видно, что попадает в move_queue generic_mapper)
 function MudMapper.on_send(event, data)
-  MudMapper.dbg("[send] " .. tostring(data))
+  MudMapper.last_cmd = tostring(data)
+  MudMapper.dbg("[send] " .. MudMapper.last_cmd)
 end
 
 -- нормализация направления
@@ -242,18 +278,40 @@ function MudMapper.link_prev()
   if not cur or not prev_vnum then return end
 
   local ex = msdp.ROOM and msdp.ROOM.EXITS
-  if type(ex) ~= "table" then return end
-
   local back_dir
-  for d, target in pairs(ex) do
-    if tostring(target) == prev_vnum then
-      back_dir = MudMapper.normalize_dir(d)
-      break
+  if type(ex) == "table" then
+    for d, target in pairs(ex) do
+      if tostring(target) == prev_vnum then
+        back_dir = MudMapper.normalize_dir(d)
+        break
+      end
     end
   end
   if not back_dir then
-    MudMapper.dbg("[link] cur=" .. tostring(cur) .. " prev_vnum=" .. tostring(prev_vnum) .. " — нет обратного выхода, пропуск")
-    return   -- телепорт/реколл — не трогаем
+    MudMapper.dbg("[link] cur=" .. tostring(cur) .. " prev_vnum=" .. tostring(prev_vnum) .. " — нет обратного выхода")
+    local prev_id = getRoomIDbyHash(prev_vnum)
+    if prev_id and prev_id > 0 and prev_id ~= cur then
+      local cmd = MudMapper.is_portal_cmd(MudMapper.last_cmd)
+      if cmd then
+        addSpecialExit(prev_id, cur, cmd)
+        local old = getRoomUserData(cur, "portals") or ""
+        local back = tostring(prev_id) .. ":" .. cmd
+        setRoomUserData(cur, "portals", old ~= "" and (old .. "," .. back) or back)
+        MudMapper.dbg("[link] портал: " .. tostring(prev_vnum) .. " --'" .. cmd .. "'--> " .. tostring(cur))
+        -- координаты ставим только для только что созданной комнаты
+        if MudMapper.just_created == cur then
+          if getRoomArea(prev_id) == getRoomArea(cur) then
+            local px, py, pz = getRoomCoordinates(prev_id)
+            setRoomCoordinates(cur, px + 1, py, pz)
+            MudMapper.dbg("[link] портал в той же зоне: ставлю рядом (" .. tostring(px+1) .. "," .. tostring(py) .. "," .. tostring(pz) .. ")")
+          else
+            MudMapper.place_in_area(cur, getRoomArea(cur))
+            MudMapper.dbg("[link] портал в другую зону: размещаю в своей зоне")
+          end
+        end
+      end
+    end
+    return   -- телепорт/реколл (не портал) — не трогаем
   end
 
   local prev_id = getRoomIDbyHash(prev_vnum)
@@ -284,6 +342,7 @@ end
 
 -- выравниваем позицию карты по VNUM и центрируем маркер игрока
 function MudMapper.sync_position(vnum, r)
+  MudMapper.just_created = nil
   -- самая первая комната: currentRoom может быть nil — создаём её в (0,0,0)
   if not map.currentRoom then
     if map.mapping then
@@ -295,6 +354,7 @@ function MudMapper.sync_position(vnum, r)
         setRoomIDbyHash(id, vnum)
         setRoomArea(id, MudMapper.area_id(r.AREA or "sowmud"))
         setRoomCoordinates(id, 0, 0, 0)
+        MudMapper.just_created = id
         MudMapper.dbg("[sync] создаю первую комнату id=" .. tostring(id) .. " в (0,0,0)")
       end
       raiseEvent("sysManualLocationSetEvent", id)
@@ -321,6 +381,7 @@ function MudMapper.sync_position(vnum, r)
       local x, y, z = getRoomCoordinates(map.currentRoom)
       MudMapper.dbg("[sync] создаю комнату id=" .. tostring(id) .. " в (" .. tostring(x+1) .. "," .. tostring(y) .. "," .. tostring(z) .. ")")
       setRoomCoordinates(id, x + 1, y, z)
+      MudMapper.just_created = id
       raiseEvent("sysManualLocationSetEvent", id)
     else
       MudMapper.dbg("[sync] маппинг выключен — комнату не создаю")
