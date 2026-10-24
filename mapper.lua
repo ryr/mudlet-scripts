@@ -53,6 +53,9 @@ MudMapper.cmd_wait = {
 -- максимум ожидания строки, сек
 MudMapper.wait_timeout = 10
 
+-- таймаут спидвока, после которого восстанавливаем маппинг (сек)
+MudMapper.walk_timeout = 90
+
 -- найти/создать зону по имени и вернуть её числовой ID (не двигая комнаты)
 function MudMapper.area_id(name)
   local n = tostring(name or "sowmud")
@@ -416,6 +419,16 @@ function MudMapper.sync_position(vnum, r)
   centerview(map.currentRoom)
 end
 
+-- сохраняем MSDP-выходы комнаты: на следующем ходу по ним восстановим предыдущую
+function MudMapper.save_prev_exits(r)
+  if type(r.EXITS) == "table" then
+    MudMapper.prev_exits = {}
+    for d, t in pairs(r.EXITS) do MudMapper.prev_exits[d] = t end
+  else
+    MudMapper.prev_exits = nil
+  end
+end
+
 -- главная функция: обрабатываем текущую комнату из MSDP
 function MudMapper.update_room(exits_text)
   if not map then return end
@@ -452,24 +465,99 @@ function MudMapper.update_room(exits_text)
   end
 
   MudMapper.sync_position(vnum, r)
+
+  -- спидвок: карту не редактируем; по прибытии восстанавливаем исходное состояние
+  if MudMapper.walking then
+    if MudMapper.walk_target == vnum then
+      MudMapper.end_walk()
+    end
+    -- держим prev_exits актуальными, чтобы после ходьбы restore_prev не взял устаревшие данные
+    MudMapper.save_prev_exits(r)
+    return
+  end
+
   MudMapper.wire_exits()
   MudMapper.restore_prev()
   MudMapper.link_prev()
   MudMapper.apply_doors(exits_text)
 
   -- сохраняем MSDP-выходы текущей комнаты: на следующем ходу восстановим по ним предыдущую
-  if type(r.EXITS) == "table" then
-    MudMapper.prev_exits = {}
-    for d, t in pairs(r.EXITS) do MudMapper.prev_exits[d] = t end
-  else
-    MudMapper.prev_exits = nil
-  end
+  MudMapper.save_prev_exits(r)
 end
 
 -- тёмная комната: MSDP всё равно отдаёт VNUM и выходы
 function MudMapper.on_vision_fail()
   MudMapper.dbg("[event] onVisionFail")
   MudMapper.update_room()
+end
+
+-- ===== Спидвок: временно отключаем редактирование карты =====
+-- на время ходьбы map.mapping выключается (только если был включён),
+-- после завершения/таймаута восстанавливается исходное значение.
+MudMapper.walking = false
+MudMapper.walk_target = nil
+MudMapper.walk_saved_mapping = nil
+MudMapper.walk_timer = nil
+
+-- запись map.mapping защищена метатаблицей generic_mapper — пишем через map.set
+function MudMapper.set_mapping(on)
+  if map.set then
+    map.set("mapping", on)
+  else
+    map.mapping = on   -- fallback, если generic_mapper ещё не настроил метатаблицу
+  end
+end
+
+function MudMapper.start_walk(vnum)
+  -- если спидвок уже идёт, не перетираем исходное состояние маппинга
+  if not MudMapper.walking then
+    MudMapper.walk_saved_mapping = (map.mapping == true)
+    -- запоминаем, был ли маппинг включён, и выключаем его на время ходьбы
+    if MudMapper.walk_saved_mapping then
+      MudMapper.set_mapping(false)
+      MudMapper.dbg("[walk] маппинг был включён — временно выключаю")
+    else
+      MudMapper.dbg("[walk] маппинг и так выключен — не трогаю")
+    end
+  end
+  MudMapper.walking = true
+  MudMapper.walk_target = vnum and tostring(vnum) or nil
+  if MudMapper.walk_timer then killTimer(MudMapper.walk_timer) end
+  MudMapper.walk_timer = tempTimer(MudMapper.walk_timeout or 90, function()
+    MudMapper.dbg("[walk] таймаут — путь не завершён, восстанавливаю маппинг")
+    MudMapper.end_walk()
+  end)
+end
+
+function MudMapper.end_walk()
+  if not MudMapper.walking then return end
+  if MudMapper.walk_timer then killTimer(MudMapper.walk_timer); MudMapper.walk_timer = nil end
+  MudMapper.walking = false
+  MudMapper.walk_target = nil
+  if MudMapper.walk_saved_mapping then
+    MudMapper.set_mapping(true)
+    MudMapper.dbg("[walk] спидвок завершён — маппинг включён обратно")
+  else
+    MudMapper.dbg("[walk] спидвок завершён — маппинг остаётся выключенным")
+  end
+  MudMapper.walk_saved_mapping = nil
+end
+
+-- спидвок, запущенный generic_mapper (двойной клик по карте и т.п.)
+-- ВАЖНО: sysSpeedwalkFinished не используем — он срабатывает при отправке последней
+-- команды, а не по прибытии. Завершение ловим по VNUM цели в update_room или по таймауту.
+function MudMapper.on_speedwalk_started()
+  local target_id = speedWalkPath and speedWalkPath[#speedWalkPath]
+  local target_vnum = target_id and getRoomHashByID(target_id)
+  if not target_vnum or target_vnum == "" then target_vnum = nil end
+  MudMapper.dbg("[walk] sysSpeedwalkStarted target_id=" .. tostring(target_id) ..
+    " target_vnum=" .. tostring(target_vnum))
+  MudMapper.start_walk(target_vnum)
+end
+
+function MudMapper.on_speedwalk_stopped()
+  MudMapper.dbg("[walk] sysSpeedwalkStopped")
+  MudMapper.end_walk()
 end
 
 -- speedwalk в комнату по VNUM (с паузами после "куп 1" и т.п.)
@@ -494,6 +582,7 @@ function MudMapper.goto_vnum(vnum)
 
   local cmds = {}
   for i = 1, #speedWalkDir do cmds[i] = speedWalkDir[i] end
+  MudMapper.start_walk(vnum)
   MudMapper.send_path(cmds, 1)
 end
 
@@ -587,5 +676,7 @@ end
 registerAnonymousEventHandler("sysProtocolEnabled", "MudMapper.on_protocol")
 registerAnonymousEventHandler("msdp.ROOM", "MudMapper.on_msdp_room")
 registerAnonymousEventHandler("sysDataSendRequest", "MudMapper.on_send")
+registerAnonymousEventHandler("sysSpeedwalkStarted", "MudMapper.on_speedwalk_started")
+registerAnonymousEventHandler("sysSpeedwalkStopped", "MudMapper.on_speedwalk_stopped")
 
 tempTimer(1, MudMapper.init)
