@@ -44,6 +44,15 @@ MudMapper.stub_num = { n=1, e=4, s=6, w=5, u=9, d=10 }
 -- числовой код Mudlet -> короткое направление
 MudMapper.num_dir = { [1]="n", [4]="e", [6]="s", [5]="w", [9]="u", [10]="d" }
 
+-- после каких команд ждать какую строку-подтверждение (подстрока)
+MudMapper.cmd_wait = {
+  ["куп 1"] = "Вы почувствовали, что переместились в пространстве",
+  ["куп 2"] = "Вы почувствовали, что переместились в пространстве",
+}
+
+-- максимум ожидания строки, сек
+MudMapper.wait_timeout = 10
+
 -- найти/создать зону по имени и вернуть её числовой ID (не двигая комнаты)
 function MudMapper.area_id(name)
   local n = tostring(name or "sowmud")
@@ -448,14 +457,69 @@ function MudMapper.on_vision_fail()
   MudMapper.update_room()
 end
 
--- speedwalk в комнату по VNUM (бонус)
+-- speedwalk в комнату по VNUM (с паузами после "куп 1" и т.п.)
 function MudMapper.goto_vnum(vnum)
-  local id = getRoomIDbyHash(tostring(vnum))
-  if id and id > 0 then
-    gotoRoom(id)
-  else
-    echo("Комната " .. tostring(vnum) .. " ещё не в карте\n")
+  local target = getRoomIDbyHash(tostring(vnum))
+  if not (target and target > 0) then
+    MudMapper.echo("Комната " .. tostring(vnum) .. " ещё не в карте")
+    return
   end
+
+  local cur = map.currentRoom
+  if not cur then
+    MudMapper.echo("Не знаю, где вы")
+    return
+  end
+
+  getPath(cur, target)
+  if not speedWalkPath or #speedWalkPath == 0 then
+    MudMapper.echo("Путь не найден")
+    return
+  end
+
+  local cmds = {}
+  for i = 1, #speedWalkDir do cmds[i] = speedWalkDir[i] end
+  MudMapper.send_path(cmds, 1)
+end
+
+-- пошаговая отправка: обычные команды сразу, после "куп 1"/"куп 2" — ждём строку
+function MudMapper.send_path(cmds, i)
+  while cmds[i] do
+    local cmd = cmds[i]
+    send(cmd)
+
+    local pat = MudMapper.cmd_wait and MudMapper.cmd_wait[cmd]
+    if pat then
+      MudMapper.dbg('[walk] ждём строку "' .. pat .. '" после "' .. cmd .. '"')
+      MudMapper.wait_line(pat, function()
+        MudMapper.send_path(cmds, i + 1)
+      end)
+      return
+    end
+    i = i + 1
+  end
+
+  MudMapper.dbg("[walk] путь завершён")
+end
+
+-- ждём появления строки-подтверждения (с таймаутом)
+function MudMapper.wait_line(pat, cb)
+  local fired = false
+  local timer_id
+  local trig_id = tempTrigger(pat, function()
+    if not fired then
+      fired = true
+      killTimer(timer_id)
+      cb()
+    end
+  end)
+  timer_id = tempTimer(MudMapper.wait_timeout or 8, function()
+    if not fired then
+      fired = true
+      killTrigger(trig_id)
+      MudMapper.echo("Таймаут ожидания строки: " .. pat)
+    end
+  end)
 end
 
 -- ===== Инициализация =====
