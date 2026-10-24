@@ -9,6 +9,7 @@
 | [antibot.lua](antibot.lua) | Распознавание анти-бот проверок и автоматический ответ на них |
 | [mapper.lua](mapper.lua) | Автоматическое построение карты по данным MSDP (`MudMapper`) |
 | [GroupEquipmentLook.lua](GroupEquipmentLook.lua) | Разбор экипировки сопартийцев и проверка «чего не хватает» (`GroupEquipmentLook`) |
+| [sendClear.lua](sendClear.lua) | Хелперы отправки команд без дублей и с префиксом `очистить` (`sendWithClear`, `sendUnique`) |
 
 ## antibot.lua
 
@@ -62,9 +63,19 @@
 
 Требуется Mudlet 5+ и один триггер `^(.*)$` с вызовом `GroupEquipmentLook.onIncoming(line)` (код триггера — в шапке файла); `onInput` подключается автоматически при загрузке скрипта.
 
+## sendClear.lua
+
+Небольшая библиотека для триггеров и алиасов, которые отправляют одинаковые команды из нескольких мест.
+
+- `sendWithClear(...)` — отправляет аргументы через `sendAll`, добавляя первым аргументом `очистить`, но только если `antiBotLastSent == 0`; иначе команда уходит как есть, а в консоль печатается маркер `--------------------------- [ ПРОВЕРКА НА БОТА !!! ]`.
+- `sendUnique(...)` — отправляет аргументы без `очистить`; нужен, когда вызывающий код сам управляет этой командой.
+- Внутренняя `isDuplicate(...)` запоминает набор переданных аргументов (`last_call_key`) и блокирует повторный вызов с тем же набором, пока не придёт строка состояния (флаг `status_reached` сбрасывается после успешной проверки). Так одна и та же реакция не отправляется дважды, если её поймали несколько триггеров.
+
+Особенности: файл — не самостоятельный триггер, а набор функций для других скриптов; использует внешние глобальные переменные `antiBotLastSent` (общая с `antibot.lua`) и `status_reached` (выставляется обработчиком строки состояния). `last_call_key` локален для этого скрипта.
+
 ## Требования
 
-- Mudlet 4.x для `antibot.lua` и `mapper.lua` (используются `utf8`, `msdp`, `getEpoch`, `raiseEvent`), Mudlet 5+ для `GroupEquipmentLook.lua`.
+- Mudlet 4.x для `antibot.lua`, `mapper.lua` и `sendClear.lua` (используются `utf8`, `msdp`, `getEpoch`, `raiseEvent`, `sendAll`), Mudlet 5+ для `GroupEquipmentLook.lua`.
 - Пакет [`generic_mapper`](https://wiki.mudlet.org/w/Manual:Generic_Mapper) для `mapper.lua` (глобальный объект `map`).
 - Пакет `demonnic.chat` для уведомлений в OOC (`antibot.lua`).
 - Поддержка MSDP на стороне сервера MUD (`mapper.lua`).
