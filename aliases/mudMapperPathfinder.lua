@@ -2,6 +2,9 @@
 
 -- lua addSpecialExit(1979, 147, "куп 1") -- задает спец команду для перемещения
 -- lua display(getSpecialExits(1979)) -- проверяем существование спец выходов
+-- lua removeSpecialExit(1979, "куп 1") -- удалить конкретную спец команду
+-- lua clearSpecialExits(1979) -- удалить все команды для комнаты
+
 
 local path_map = {
   ["гасклад"] = { vnum = 450465, name = "Склад Галена" },

@@ -167,25 +167,27 @@ function MudMapper.wire_room(room_id, msdp_exits, tag)
     if s and MudMapper.exit_dirs[s] then msdp_dirs[s] = true end
   end
 
-  -- чистка: убираем реальные выходы, которых нет в MSDP
+  -- чистка (реальные выходы + стабы) — ТОЛЬКО если MSDP реально что-то сообщил.
+  -- При скрытых выходах MSDP пуст — чистить нельзя, иначе затёрли бы уже найденные связи.
   local existing = getRoomExits(room_id) or {}
   MudMapper.dbg("[" .. tag .. "] existing: " .. MudMapper.exits_desc(existing))
-  for dir, _ in pairs(existing) do
-    local s = MudMapper.normalize_dir(dir)
-    if s and MudMapper.exit_dirs[s] and not msdp_dirs[s] then
-      MudMapper.dbg("[" .. tag .. "] REMOVE " .. tostring(dir))
-      setExit(room_id, -1, s)
+  if next(msdp_dirs) then
+    for dir, _ in pairs(existing) do
+      local s = MudMapper.normalize_dir(dir)
+      if s and MudMapper.exit_dirs[s] and not msdp_dirs[s] then
+        MudMapper.dbg("[" .. tag .. "] REMOVE " .. tostring(dir))
+        setExit(room_id, -1, s)
+      end
     end
-  end
 
-  -- чистка: убираем стабы, которых нет в MSDP
-  local stubs = getExitStubs(room_id)
-  if type(stubs) == "table" then
-    for _, num in pairs(stubs) do
-      local s = MudMapper.num_dir[num]
-      if s and not msdp_dirs[s] then
-        MudMapper.dbg("[" .. tag .. "] REMOVE stub " .. tostring(s))
-        setExitStub(room_id, num, false)
+    local stubs = getExitStubs(room_id)
+    if type(stubs) == "table" then
+      for _, num in pairs(stubs) do
+        local s = MudMapper.num_dir[num]
+        if s and not msdp_dirs[s] then
+          MudMapper.dbg("[" .. tag .. "] REMOVE stub " .. tostring(s))
+          setExitStub(room_id, num, false)
+        end
       end
     end
   end
@@ -288,12 +290,21 @@ function MudMapper.link_prev()
 
   local ex = msdp.ROOM and msdp.ROOM.EXITS
   local back_dir
+  local hidden = false
   if type(ex) == "table" then
     for d, target in pairs(ex) do
       if tostring(target) == prev_vnum then
         back_dir = MudMapper.normalize_dir(d)
         break
       end
+    end
+  end
+  -- скрытый выход: MSDP пуст — направление берём из последней команды
+  if not back_dir then
+    local d = MudMapper.normalize_dir(MudMapper.last_cmd)
+    if d and MudMapper.exit_dirs[d] then
+      back_dir = MudMapper.reverse_dir[d]
+      hidden = true
     end
   end
   if not back_dir then
@@ -334,8 +345,12 @@ function MudMapper.link_prev()
       MudMapper.dbg("[link] setExit(prev=" .. tostring(prev_id) .. " -> cur=" .. tostring(cur) .. ", " .. tostring(fwd) .. ")")
       setExit(prev_id, cur, fwd)
     end
-    MudMapper.dbg("[link] setExit(cur=" .. tostring(cur) .. " -> prev=" .. tostring(prev_id) .. ", " .. tostring(back_dir) .. ")")
-    setExit(cur, prev_id, back_dir)
+    if hidden then
+      MudMapper.dbg("[link] скрытый выход: только прямое " .. tostring(fwd) .. " (обратное зафиксируется при обратном проходе)")
+    else
+      MudMapper.dbg("[link] setExit(cur=" .. tostring(cur) .. " -> prev=" .. tostring(prev_id) .. ", " .. tostring(back_dir) .. ")")
+      setExit(cur, prev_id, back_dir)
+    end
 
     -- исправляем координаты по направлению из MSDP
     local off = MudMapper.dir_offset[fwd]
