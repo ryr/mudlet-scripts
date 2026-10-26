@@ -8,6 +8,8 @@
 |------|------------|
 | [antibot.lua](antibot.lua) | Распознавание анти-бот проверок и автоматический ответ на них |
 | [mapper.lua](mapper.lua) | Автоматическое построение карты по данным MSDP (`MudMapper`) |
+| [mapperLabel.lua](mapperLabel.lua) | Кликабельная плашка `MAP: ON` / `MAP: OFF` — включение/выключение маппинга generic_mapper |
+| [mudMapperPathfinder.lua](aliases/mudMapperPathfinder.lua) | Алиас `муть` — быстрый переход к складам, квестам и порталам городов по списку путей (`MudMapper.goto_vnum`) |
 | [GroupEquipmentLook.lua](GroupEquipmentLook.lua) | Разбор экипировки сопартийцев и проверка «чего не хватает» (`GroupEquipmentLook`) |
 | [sendClear.lua](sendClear.lua) | Хелперы отправки команд без дублей и с префиксом `очистить` (`sendWithClear`, `sendUnique`) |
 
@@ -45,6 +47,30 @@
 
 Установка: три триггера (`Room Exits Catch`, `Vision Fail Trigger`) и скрипт `MudMapper` — точные паттерны и привязки перечислены в комментарии в начале файла.
 
+## mapperLabel.lua
+
+Кликабельная плашка `MAP: ON` / `MAP: OFF` в правом верхнем углу (справа от плашки BOT), которая включает и выключает маппинг [`generic_mapper`](https://wiki.mudlet.org/w/Manual:Generic_Mapper).
+
+- **Состояние** — читается из `map.mapping`, флага mapping mode generic_mapper.
+- **Переключение** — по клику пишется через `map.set("mapping", ...)`: в generic_mapper поле `map.mapping` защищено метатаблицей (тот же приём, что в `MudMapper.set_mapping`).
+- **Вид** — синяя плашка `MAP: ON`, серая `MAP: OFF`; клик переключает режим.
+- **Загрузка** — плашка ждёт появления объекта `map` (generic_mapper может грузиться позже) и показывает актуальное состояние.
+- **Синхронизация** — плашка раз в 0.5 с сверяет `map.mapping` и обновляется при любом изменении: клик, спидвок, ручные `start mapping` / `stop mapping`. Дополнительно `MudMapper.start_walk()` / `MudMapper.end_walk()` дёргают `updateMapperLabel()` для мгновенного отклика.
+
+Установка: отдельный скрипт Mudlet (тело — код из файла). Требуется пакет `generic_mapper`; для синхронизации со спидвоком — вместе с `mapper.lua`.
+
+## mudMapperPathfinder.lua
+
+Алиас `муть` для быстрого перехода в заранее заданные места через `MudMapper.goto_vnum`. Файл лежит в `aliases/mudMapperPathfinder.lua`.
+
+- **Один регэксп** — `^муть\s*(?<location>.*)$`: и `муть` без аргумента, и `муть <ключ>` обрабатываются одним паттерном; `location` всегда присутствует (пустая строка, если аргумента нет).
+- **Навигация** — `муть гасклад` отправляет `гг Бежим в локацию "..."` и запускает спидвок через `MudMapper.goto_vnum(vnum)`.
+- **Список путей** — голое `муть` (или только пробелы) печатает упорядоченный список с секциями `Склады`, `Квесты`, `Порталы городов`; в каждой строке ключ, название и VNUM.
+- **Неизвестный ключ** — `муть нетакого` отвечает «Локация не найдена» с подсказкой.
+- **Нормализация** — аргумент прогоняется через `string.trim`, поэтому лишние пробелы по краям не мешают.
+
+Установка: алиас Mudlet с паттерном `^муть\s*(?<location>.*)$` (тело — код из файла). Для навигации нужен `mapper.lua` (`MudMapper.goto_vnum`).
+
 ## GroupEquipmentLook.lua
 
 `GroupEquipmentLook` разбирает вывод `look <игрок>` (блок «использует:» / «в превосходном состоянии») и умеет пакетно проверять экипировку всей группы, сообщая в групповой канал, чего не хватает каждому.
@@ -73,9 +99,77 @@
 
 Особенности: файл — не самостоятельный триггер, а набор функций для других скриптов; использует внешние глобальные переменные `antiBotLastSent` (общая с `antibot.lua`) и `status_reached` (выставляется обработчиком строки состояния). `last_call_key` локален для этого скрипта.
 
+## Цвета Mudlet
+
+Справочник по цветовым кодам для `echo`-функций. В Mudlet три «цветные» функции с разным синтаксисом — их легко перепутать.
+
+### `cecho` — именованные цвета
+
+```lua
+cecho("<red>красный <green>зелёный <gray>серый <reset>\n")
+```
+
+- `<имя>` — имя из глобальной таблицы `color_table` (палитра CSS/SVG).
+- `<fg:bg>` — текст и фон: `cecho("<white:dark_green>текст")`.
+- Форматирование: `<b>…</b>`, `<i>…</i>`, `<u>…</u>`, `<s>…</s>`, `<o>…</o>`.
+- Сброс: `<reset>` или `<r>`.
+- Имена регистрозависимы; для составных доступны оба стиля — `snake_case` и `CamelCase`: `light_blue` / `LightBlue`, `alice_blue` / `AliceBlue`.
+
+Примеры имён (полный список — в `color_table`):
+
+| Категория | Имена |
+|-----------|-------|
+| Базовые | `black`, `white`, `red`, `green`, `blue`, `yellow`, `cyan`, `magenta`, `purple`, `maroon`, `navy`, `pink`, `orange`, `brown`, `gold`, `khaki`, `coral`, `salmon`, `violet`, `plum`, `orchid`, `turquoise`, `aquamarine`, `tan`, `sienna`, `peru`, `beige`, `ivory`, `wheat` |
+| Серые | `gray`/`grey`, `light_gray`/`light_grey`, `dim_gray`/`dim_grey`, `slate_gray`/`slate_grey`, `dark_slate_gray` |
+| Синие | `light_blue`, `sky_blue`, `royal_blue`, `steel_blue`, `dodger_blue`, `midnight_blue`, `navy_blue`, `powder_blue`, `cornflower_blue`, `cadet_blue`, `alice_blue`, `blue_violet` |
+| Зелёные | `lime_green`, `forest_green`, `sea_green`, `spring_green`, `dark_green`, `dark_sea_green`, `olive_drab`, `yellow_green`, `lawn_green` |
+| Тёплые | `firebrick`, `indian_red`, `tomato`, `hot_pink`, `deep_pink`, `rosy_brown`, `goldenrod`, `chocolate` |
+
+В рантайме в `color_table` также добавляются ANSI-имена профиля: `ansi_red`, `ansi_light_red`, `ansi_000`…`ansi_015`.
+
+Важно: **в `cecho` нет десятичного RGB и hex.** `<150,150,150>` и `<#ff0000>` не сработают. Также отсутствуют `silver` и `darkgray` — для серого используй `gray`/`grey`, `light_gray`, `dim_gray`, `slate_gray`.
+
+### `decho` — десятичный RGB
+
+```lua
+decho("<255,0,0>красный <0,255,0:0,0,0>зелёный на чёрном\n")
+```
+
+- `<R,G,B>` или `<R,G,B:R,G,B>` (фон опционален), значения 0–255.
+- Можно задать только фон: `<:R,G,B>`.
+- Сброс: `<r>`.
+
+### `hecho` — hex
+
+```lua
+hecho("|cff0000,00ff00красный на зелёном|r\n")
+```
+
+- `|cRRGGBB` или `|cRRGGBB,RRGGBB` (фон опционален), сброс `|r`.
+- Понимает и формы с `#`: `#RRGGBB`, `#RRGGBB,RRGGBB`, `#r`.
+
+### Как посмотреть все имена `color_table`
+
+Вставь в Mudlet (`lua ...` или временный скрипт):
+
+```lua
+local names = {}
+for k in pairs(color_table) do names[#names + 1] = k end
+table.sort(names)
+cecho("<yellow>color_table (" .. #names .. "):<reset>\n" .. table.concat(names, ", ") .. "\n")
+```
+
+Или `display(color_table)` — покажет имена и их RGB-компоненты.
+
+### Быстрый выбор
+
+- цвет по названию → `cecho`: `cecho("<orange>текст")`;
+- точный оттенок цифрами → `decho`: `decho("<150,150,150>текст")`;
+- точный цвет из hex → `hecho`: `hecho("|c969696текст")`.
+
 ## Требования
 
-- Mudlet 4.x для `antibot.lua`, `mapper.lua` и `sendClear.lua` (используются `utf8`, `msdp`, `getEpoch`, `raiseEvent`, `sendAll`), Mudlet 5+ для `GroupEquipmentLook.lua`.
+- Mudlet 4.x для `antibot.lua`, `mapper.lua`, `sendClear.lua` и `aliases/mudMapperPathfinder.lua` (используются `utf8`, `msdp`, `getEpoch`, `raiseEvent`, `sendAll`), Mudlet 5+ для `GroupEquipmentLook.lua`.
 - Пакет [`generic_mapper`](https://wiki.mudlet.org/w/Manual:Generic_Mapper) для `mapper.lua` (глобальный объект `map`).
 - Пакет `demonnic.chat` для уведомлений в OOC (`antibot.lua`).
 - Поддержка MSDP на стороне сервера MUD (`mapper.lua`).

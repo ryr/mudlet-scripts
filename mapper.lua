@@ -520,6 +520,8 @@ function MudMapper.start_walk(vnum)
       MudMapper.dbg("[walk] маппинг и так выключен — не трогаю")
     end
   end
+  -- плашка маппинга (mapperLabel.lua), если загружена
+  if updateMapperLabel then updateMapperLabel() end
   MudMapper.walking = true
   MudMapper.walk_target = vnum and tostring(vnum) or nil
   if MudMapper.walk_timer then killTimer(MudMapper.walk_timer) end
@@ -540,6 +542,8 @@ function MudMapper.end_walk()
   else
     MudMapper.dbg("[walk] спидвок завершён — маппинг остаётся выключенным")
   end
+  -- плашка маппинга (mapperLabel.lua), если загружена
+  if updateMapperLabel then updateMapperLabel() end
   MudMapper.walk_saved_mapping = nil
 end
 
