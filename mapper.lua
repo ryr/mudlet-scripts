@@ -50,6 +50,9 @@ MudMapper.cmd_wait = {
   ["куп 2"] = "Вы почувствовали, что переместились в пространстве",
 }
 
+-- команды входа в портал с оплатой (заменяем на предпочитаемую при спидвоке)
+MudMapper.portal_fee_cmds = { ["куп 1"] = true, ["куп 2"] = true }
+
 -- максимум ожидания строки, сек
 MudMapper.wait_timeout = 10
 
@@ -565,7 +568,8 @@ function MudMapper.on_speedwalk_stopped()
 end
 
 -- speedwalk в комнату по VNUM (с паузами после "куп 1" и т.п.)
-function MudMapper.goto_vnum(vnum)
+-- portal_cmd (опционально): "куп 1" или "куп 2" — заменить все шаги-порталы на эту команду
+function MudMapper.goto_vnum(vnum, portal_cmd)
   local target = getRoomIDbyHash(tostring(vnum))
   if not (target and target > 0) then
     MudMapper.echo("Комната " .. tostring(vnum) .. " ещё не в карте")
@@ -586,28 +590,50 @@ function MudMapper.goto_vnum(vnum)
 
   local cmds = {}
   for i = 1, #speedWalkDir do cmds[i] = speedWalkDir[i] end
+
+  -- заменяем шаг-портал ("куп 1"/"куп 2") на предпочитаемую команду
+  if portal_cmd and MudMapper.portal_fee_cmds[portal_cmd] then
+    for i, c in ipairs(cmds) do
+      if MudMapper.portal_fee_cmds[c] then
+        cmds[i] = portal_cmd
+      end
+    end
+  end
+
   MudMapper.start_walk(vnum)
   MudMapper.send_path(cmds, 1)
 end
 
--- пошаговая отправка: обычные команды сразу, после "куп 1"/"куп 2" — ждём строку
+-- пошаговая отправка: обычные команды копим в пачку через ";",
+-- портальная команда закрывает пачку, после неё ждём строку-подтверждение
 function MudMapper.send_path(cmds, i)
+  local buf = {}
   while cmds[i] do
     local cmd = cmds[i]
-    send(cmd)
-
     local pat = MudMapper.cmd_wait and MudMapper.cmd_wait[cmd]
     if pat then
+      buf[#buf + 1] = cmd
+      MudMapper.flush_cmds(buf)
       MudMapper.dbg('[walk] ждём строку "' .. pat .. '" после "' .. cmd .. '"')
       MudMapper.wait_line(pat, function()
         MudMapper.send_path(cmds, i + 1)
       end)
       return
     end
+    buf[#buf + 1] = cmd
     i = i + 1
   end
 
+  MudMapper.flush_cmds(buf)
   MudMapper.dbg("[walk] путь завершён")
+end
+
+-- отправляем накопленные команды одной строкой: "n;n;s;w;w;w;w;куп 1"
+function MudMapper.flush_cmds(buf)
+  if not buf or #buf == 0 then return end
+  local line = table.concat(buf, ";")
+  MudMapper.dbg('[walk] шлю пачкой: "' .. line .. '"')
+  send(line)
 end
 
 -- ждём появления строки-подтверждения (с таймаутом)
