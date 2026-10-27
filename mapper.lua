@@ -358,14 +358,23 @@ function MudMapper.link_prev()
       setExit(cur, prev_id, back_dir)
     end
 
-    -- исправляем координаты по направлению из MSDP
+    -- исправляем координаты по направлению из MSDP (только в пределах одной зоны)
     local off = MudMapper.dir_offset[fwd]
     if off then
-      local px, py, pz = getRoomCoordinates(prev_id)
-      local cx, cy, cz = getRoomCoordinates(cur)
-      MudMapper.dbg("[link] coords cur: (" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(cz) ..
-        ") -> (" .. tostring(px+off[1]) .. "," .. tostring(py+off[2]) .. "," .. tostring(pz+off[3]) .. ")")
-      setRoomCoordinates(cur, px + off[1], py + off[2], pz + off[3])
+      if getRoomArea(prev_id) == getRoomArea(cur) then
+        local px, py, pz = getRoomCoordinates(prev_id)
+        local cx, cy, cz = getRoomCoordinates(cur)
+        -- если комната уже есть и на другом уровне (z различается) — её координаты не трогаем
+        if cz ~= pz and MudMapper.just_created ~= cur then
+          MudMapper.dbg("[link] комната уже есть и z различается (" .. tostring(cz) .. " vs " .. tostring(pz) .. ") — координаты не трогаю")
+        else
+          MudMapper.dbg("[link] coords cur: (" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(cz) ..
+            ") -> (" .. tostring(px+off[1]) .. "," .. tostring(py+off[2]) .. "," .. tostring(pz+off[3]) .. ")")
+          setRoomCoordinates(cur, px + off[1], py + off[2], pz + off[3])
+        end
+      else
+        MudMapper.dbg("[link] переход в другую зону — координаты не трогаю")
+      end
     end
   end
 end
@@ -407,10 +416,16 @@ function MudMapper.sync_position(vnum, r)
       addRoom(id)
       setRoomName(id, "[" .. vnum .. "] " .. (r.NAME or "Неизвестно"))
       setRoomIDbyHash(id, vnum)
-      setRoomArea(id, MudMapper.area_id(r.AREA or "sowmud"))
-      local x, y, z = getRoomCoordinates(map.currentRoom)
-      MudMapper.dbg("[sync] создаю комнату id=" .. tostring(id) .. " в (" .. tostring(x+1) .. "," .. tostring(y) .. "," .. tostring(z) .. ")")
-      setRoomCoordinates(id, x + 1, y, z)
+      local area_id = MudMapper.area_id(r.AREA or "sowmud")
+      setRoomArea(id, area_id)
+      if area_id == getRoomArea(map.currentRoom) then
+        local x, y, z = getRoomCoordinates(map.currentRoom)
+        MudMapper.dbg("[sync] создаю комнату id=" .. tostring(id) .. " в (" .. tostring(x+1) .. "," .. tostring(y) .. "," .. tostring(z) .. ")")
+        setRoomCoordinates(id, x + 1, y, z)
+      else
+        MudMapper.place_in_area(id, area_id)
+        MudMapper.dbg("[sync] создаю комнату id=" .. tostring(id) .. " в своей зоне")
+      end
       MudMapper.just_created = id
       raiseEvent("sysManualLocationSetEvent", id)
     else
