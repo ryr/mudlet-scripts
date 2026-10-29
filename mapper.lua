@@ -222,6 +222,7 @@ end
 function MudMapper.wire_exits()
   if not map then return end
   if not map.mapping then return end
+  if not msdp then return end
   local r = msdp.ROOM
   local cur = map.currentRoom
   if not r or not cur or type(r.EXITS) ~= "table" then return end
@@ -290,6 +291,7 @@ end
 function MudMapper.link_prev()
   if not map then return end
   if not map.mapping then return end
+  if not msdp then return end
   local cur = map.currentRoom
   local prev_vnum = MudMapper.prev_vnum
   if not cur or not prev_vnum then return end
@@ -382,23 +384,27 @@ end
 -- выравниваем позицию карты по VNUM и центрируем маркер игрока
 function MudMapper.sync_position(vnum, r)
   MudMapper.just_created = nil
-  -- самая первая комната: currentRoom может быть nil — создаём её в (0,0,0)
+  -- currentRoom может быть nil (позиция не восстановилась после захода):
+  -- сначала пробуем найти комнату по VNUM-хэшу и позиционировать игрока,
+  -- и только при включённом маппинге создаём новую комнату в (0,0,0)
   if not map.currentRoom then
-    if map.mapping then
-      local id = getRoomIDbyHash(vnum)
-      if not (id and id > 0) then
-        id = createRoomID()
-        addRoom(id)
-        setRoomName(id, "[" .. vnum .. "] " .. (r.NAME or "Неизвестно"))
-        setRoomIDbyHash(id, vnum)
-        setRoomArea(id, MudMapper.area_id(r.AREA or "sowmud"))
-        setRoomCoordinates(id, 0, 0, 0)
-        MudMapper.just_created = id
-        MudMapper.dbg("[sync] создаю первую комнату id=" .. tostring(id) .. " в (0,0,0)")
-      end
+    local id = getRoomIDbyHash(vnum)
+    if id and id > 0 then
+      -- комната уже есть на карте: позиционируем игрока даже без режима маппинга
+      MudMapper.dbg("[sync] комната уже есть id=" .. tostring(id) .. " — позиционирую")
+      raiseEvent("sysManualLocationSetEvent", id)
+    elseif map.mapping then
+      id = createRoomID()
+      addRoom(id)
+      setRoomName(id, "[" .. vnum .. "] " .. (r.NAME or "Неизвестно"))
+      setRoomIDbyHash(id, vnum)
+      setRoomArea(id, MudMapper.area_id(r.AREA or "sowmud"))
+      setRoomCoordinates(id, 0, 0, 0)
+      MudMapper.just_created = id
+      MudMapper.dbg("[sync] создаю первую комнату id=" .. tostring(id) .. " в (0,0,0)")
       raiseEvent("sysManualLocationSetEvent", id)
     else
-      MudMapper.dbg("[sync] currentRoom=nil и маппинг выключен — пропуск")
+      MudMapper.dbg("[sync] currentRoom=nil, комнаты нет и маппинг выключен — пропуск")
     end
     return
   end
@@ -450,6 +456,10 @@ end
 -- главная функция: обрабатываем текущую комнату из MSDP
 function MudMapper.update_room(exits_text)
   if not map then return end
+  if not msdp then
+    MudMapper.dbg("[room] msdp недоступен — пропуск")
+    return
+  end
   local r = msdp.ROOM
   if not r or not r.VNUM then
     MudMapper.dbg("[room] нет msdp.ROOM/VNUM")
