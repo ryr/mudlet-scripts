@@ -681,6 +681,127 @@ function MudMapper.wait_line(pat, cb)
   end)
 end
 
+-- ===== Death trap (DT) =====
+-- Комната-ловушка: при заходе игрок мгновенно умирает.
+-- Помечаем её lockRoom (маппер никогда не проложит путь через неё)
+-- и вешаем фичу "#" (видно на карте и ищется через searchRoomUserData).
+
+MudMapper.dt_feature = "#"   -- имя фичи DT
+MudMapper.dt_char = "#"      -- буква-маркер на 2D-карте
+MudMapper.dt_env = 30                -- выделенный environment для DT
+MudMapper.dt_color = {128, 128, 128} -- серый RGB
+
+-- создать фичу "#" при первом использовании (идемпотентно)
+function MudMapper.ensure_dt_feature()
+  if not map then return false end
+  local feats = (map.getMapFeatures and map.getMapFeatures()) or {}
+  if not feats[MudMapper.dt_feature] then
+    if not map.createMapFeature then return false end
+    map.createMapFeature(MudMapper.dt_feature, MudMapper.dt_char)
+  end
+  return true
+end
+
+-- пометить комнату по ID: заблокировать + фича "#"
+function MudMapper.mark_dt(room_id)
+  if not map then return false end
+  room_id = room_id or map.currentRoom
+  if not room_id or not getRoomName(room_id) then
+    MudMapper.echo("Комната не найдена (id=" .. tostring(room_id) .. ")")
+    return false
+  end
+  lockRoom(room_id, true)
+  setCustomEnvColor(MudMapper.dt_env, MudMapper.dt_color[1], MudMapper.dt_color[2], MudMapper.dt_color[3], 255)
+  setRoomEnv(room_id, MudMapper.dt_env)
+  MudMapper.ensure_dt_feature()
+  if map.roomCreateMapFeature then
+    map.roomCreateMapFeature(MudMapper.dt_feature, room_id)
+  end
+  local vnum = getRoomHashByID(room_id)
+  MudMapper.echo("DT: комната " .. tostring(vnum or "?") ..
+    " (#" .. tostring(room_id) .. ") заблокирована и помечена '" .. MudMapper.dt_feature .. "'")
+  MudMapper.dbg("[dt] lockRoom + feature на комнате id=" .. tostring(room_id))
+  return true
+end
+
+-- снять пометку DT
+function MudMapper.unmark_dt(room_id)
+  if not map then return false end
+  room_id = room_id or map.currentRoom
+  if not room_id or not getRoomName(room_id) then return false end
+  lockRoom(room_id, false)
+  setRoomEnv(room_id, -1)
+  if map.roomDeleteMapFeature then
+    map.roomDeleteMapFeature(MudMapper.dt_feature, room_id)
+  end
+  MudMapper.echo("Комната #" .. tostring(room_id) .. " разблокирована, фича DT снята")
+  return true
+end
+
+-- найти VNUM комнаты в направлении s по MSDP-выходам текущей комнаты
+function MudMapper.exit_vnum(s)
+  if not msdp then return nil end
+  local r = msdp.ROOM
+  if not r or type(r.EXITS) ~= "table" then return nil end
+  for d, v in pairs(r.EXITS) do
+    if MudMapper.normalize_dir(d) == s then
+      return tostring(v)
+    end
+  end
+  return nil
+end
+
+-- "дт восток" / "дт в": пометить комнату в направлении как DT.
+-- Комната создаётся, если её ещё нет на карте; затем блокируется и метится фичей "#".
+function MudMapper.mark_dt_dir(dir)
+  if not map then return false end
+  local s = MudMapper.normalize_dir(dir)
+  if not s or not MudMapper.exit_dirs[s] then
+    MudMapper.echo("Неизвестное направление: " .. tostring(dir))
+    return false
+  end
+  local cur = map.currentRoom
+  if not cur then
+    MudMapper.echo("Не знаю, где вы")
+    return false
+  end
+
+  local target_vnum = MudMapper.exit_vnum(s)
+  local id
+  if target_vnum then
+    id = getRoomIDbyHash(target_vnum)
+    if not (id and id > 0) then
+      -- комнаты ещё нет на карте — создаём
+      id = createRoomID()
+      addRoom(id)
+      setRoomName(id, "[" .. target_vnum .. "] Неизвестно")
+      setRoomIDbyHash(id, target_vnum)
+      local r = msdp.ROOM
+      setRoomArea(id, MudMapper.area_id(r and r.AREA or "sowmud"))
+      local x, y, z = getRoomCoordinates(cur)
+      local off = MudMapper.dir_offset[s] or {1, 0, 0}
+      setRoomCoordinates(id, x + off[1], y + off[2], z + off[3])
+      MudMapper.dbg("[dt] создаю комнату vnum=" .. target_vnum .. " id=" .. tostring(id))
+    end
+  else
+    -- MSDP не сообщает выход (скрытый) — пробуем по уже натянутому выходу карты
+    id = map.relativeroom and map.relativeroom(cur, s)
+    if not id then
+      MudMapper.echo("Не могу найти комнату в направлении " .. tostring(s) .. " (нет выхода в MSDP и на карте)")
+      return false
+    end
+  end
+
+  -- связываем выход из текущей комнаты (убираем стаб, если был)
+  setExit(cur, id, s)
+  local num = MudMapper.stub_num[s]
+  if num then setExitStub(cur, num, false) end
+  -- обратный выход, чтобы карта была согласованной
+  setExit(id, cur, MudMapper.reverse_dir[s])
+
+  return MudMapper.mark_dt(id)
+end
+
 -- ===== Инициализация =====
 function MudMapper.init()
   if not map then
