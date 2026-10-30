@@ -209,6 +209,17 @@ function MudMapper.wire_room(room_id, msdp_exits, tag)
         setExit(room_id, tid, short)
         if num then setExitStub(room_id, num, false) end
       else
+        -- MSDP знает этот выход, но комната-цель ещё не на карте.
+        -- Если на комнате уже висит реальный выход в этом направлении — он ведёт не туда
+        -- (мусор от прошлых ошибок, например после телепорта вихрем) — убираем его.
+        local stale = getRoomExits(room_id) or {}
+        for dir, _ in pairs(stale) do
+          if MudMapper.normalize_dir(dir) == short then
+            MudMapper.dbg("[" .. tag .. "] REMOVE stale " .. tostring(dir) .. " (ожидался " .. tostring(target) .. ")")
+            setExit(room_id, -1, short)
+            break
+          end
+        end
         MudMapper.dbg("[" .. tag .. "] stub " .. tostring(short) .. " -> " .. tostring(target) .. " (комната ещё не на карте)")
         if num then setExitStub(room_id, num, true) end
       end
@@ -272,13 +283,15 @@ function MudMapper.apply_doors(exits_text)
 
   local doors = getDoors(cur) or {}
   for s in pairs(seen) do
+    -- Mudlet хранит двери u/d под полными именами ("up"/"down"), остальные — короткими
+    local key = (s == "u" and "up") or (s == "d" and "down") or s
     if closed[s] then
-      if doors[s] ~= 2 then
+      if doors[key] ~= 2 then
         MudMapper.dbg("[doors] " .. tostring(s) .. " -> closed")
         map.set_door(s, "closed")
       end
     else
-      if doors[s] and doors[s] >= 2 then
+      if doors[key] and doors[key] >= 2 then
         MudMapper.dbg("[doors] " .. tostring(s) .. " -> open")
         map.set_door(s, "open")
       end
@@ -288,7 +301,7 @@ end
 
 -- связываем текущую комнату с предыдущей и исправляем её координаты по MSDP
 -- (чистку мусора выполняет restore_prev по сохранённому MSDP предыдущей комнаты)
-function MudMapper.link_prev()
+function MudMapper.link_prev(vnum)
   if not map then return end
   if not map.mapping then return end
   if not msdp then return end
@@ -311,6 +324,28 @@ function MudMapper.link_prev()
   if not back_dir then
     local d = MudMapper.normalize_dir(MudMapper.last_cmd)
     if d and MudMapper.exit_dirs[d] then
+      -- если предыдущая комната сообщала этот выход, но он ведёт в другой VNUM,
+      -- значит нас телепортировало (вихрь и т.п.) — связь не создаём
+      local expected = MudMapper.prev_exit_vnum(d)
+      if expected and vnum and expected ~= tostring(vnum) then
+        MudMapper.dbg("[link] телепорт: " .. tostring(prev_vnum) .. " -> " .. tostring(vnum) ..
+          " (по " .. tostring(d) .. " ожидал " .. expected .. ")")
+        local prev_id = getRoomIDbyHash(prev_vnum)
+        if prev_id and prev_id > 0 and prev_id ~= cur then
+          local px, py, pz = getRoomCoordinates(prev_id)
+          local off = MudMapper.dir_offset[d] or {1, 0, 0}
+          local tp_id = MudMapper.ensure_teleport_room(expected, getRoomArea(prev_id),
+            px + off[1], py + off[2], pz + off[3])
+          -- реальный выход из prev в телепорт-комнату (вместо стаба)
+          setExit(prev_id, tp_id, d)
+          local num = MudMapper.stub_num[d]
+          if num then setExitStub(prev_id, num, false) end
+          -- обратный выход не ставим: вихрь выбрасывает в случайную соседнюю клетку
+          MudMapper.dbg("[link] телепорт-комната " .. tostring(expected) ..
+            " id=" .. tostring(tp_id) .. " помечена и связана по " .. tostring(d))
+        end
+        return
+      end
       back_dir = MudMapper.reverse_dir[d]
       hidden = true
     end
@@ -453,6 +488,17 @@ function MudMapper.save_prev_exits(r)
   end
 end
 
+-- VNUM, в который ведёт short_dir по сохранённым MSDP-выходам предыдущей комнаты
+function MudMapper.prev_exit_vnum(short_dir)
+  if type(MudMapper.prev_exits) ~= "table" then return nil end
+  for d, t in pairs(MudMapper.prev_exits) do
+    if MudMapper.normalize_dir(d) == short_dir then
+      return tostring(t)
+    end
+  end
+  return nil
+end
+
 -- главная функция: обрабатываем текущую комнату из MSDP
 function MudMapper.update_room(exits_text)
   if not map then return end
@@ -468,7 +514,7 @@ function MudMapper.update_room(exits_text)
   local vnum = tostring(r.VNUM)
   local area = r.AREA or "sowmud"
 
-  MudMapper.dbg("[room] vnum=" .. vnum .. " area=" .. area .. " last_vnum=" .. tostring(MudMapper.last_vnum))
+  MudMapper.dbg("[room] vnum=" .. vnum .. " name=" .. tostring(r.NAME) .. " area=" .. area .. " last_vnum=" .. tostring(MudMapper.last_vnum))
 
   if MudMapper.last_vnum == vnum and map.currentRoom then
     MudMapper.dbg("[room] та же комната " .. vnum .. " — только двери")
@@ -506,7 +552,7 @@ function MudMapper.update_room(exits_text)
 
   MudMapper.wire_exits()
   MudMapper.restore_prev()
-  MudMapper.link_prev()
+  MudMapper.link_prev(vnum)
   MudMapper.apply_doors(exits_text)
 
   -- сохраняем MSDP-выходы текущей комнаты: на следующем ходу восстановим по ним предыдущую
@@ -691,6 +737,14 @@ MudMapper.dt_char = "#"      -- буква-маркер на 2D-карте
 MudMapper.dt_env = 30                -- выделенный environment для DT
 MudMapper.dt_color = {128, 128, 128} -- серый RGB
 
+-- ===== Телепорт-комната (TP) =====
+-- Комната, при входе в которую игрока сразу выбрасывает в случайную соседнюю клетку
+-- (например, магический вихрь). Рисуем её синим и буквой "Т", блокируем для спидвока.
+MudMapper.tp_feature = "Т"         -- имя фичи TP
+MudMapper.tp_char = "Т"            -- буква-маркер на 2D-карте
+MudMapper.tp_env = 31              -- выделенный environment для TP
+MudMapper.tp_color = {0, 140, 255} -- синий RGB
+
 -- создать фичу "#" при первом использовании (идемпотентно)
 function MudMapper.ensure_dt_feature()
   if not map then return false end
@@ -736,6 +790,69 @@ function MudMapper.unmark_dt(room_id)
   end
   MudMapper.echo("Комната #" .. tostring(room_id) .. " разблокирована, фича DT снята")
   return true
+end
+
+-- создать фичу "Т" при первом использовании (идемпотентно)
+function MudMapper.ensure_tp_feature()
+  if not map then return false end
+  local feats = (map.getMapFeatures and map.getMapFeatures()) or {}
+  if not feats[MudMapper.tp_feature] then
+    if not map.createMapFeature then return false end
+    map.createMapFeature(MudMapper.tp_feature, MudMapper.tp_char)
+  end
+  return true
+end
+
+-- пометить комнату как телепорт: заблокировать + синий цвет + фича "Т"
+function MudMapper.mark_tp(room_id)
+  if not map then return false end
+  room_id = room_id or map.currentRoom
+  if not room_id or not getRoomName(room_id) then return false end
+  lockRoom(room_id, true)
+  setCustomEnvColor(MudMapper.tp_env, MudMapper.tp_color[1], MudMapper.tp_color[2], MudMapper.tp_color[3], 255)
+  setRoomEnv(room_id, MudMapper.tp_env)
+  MudMapper.ensure_tp_feature()
+  if map.roomCreateMapFeature then
+    -- не вызываем повторно, если фича уже стоит (иначе generic_mapper пишет предупреждение
+    -- "Room '...' has already map feature ..." на каждом повторном телепорте)
+    local present = false
+    local rfeats = (map.getRoomMapFeatures and map.getRoomMapFeatures(room_id)) or {}
+    for _, f in ipairs(rfeats) do
+      if string.lower(tostring(f)) == string.lower(MudMapper.tp_feature) then present = true break end
+    end
+    if not present then
+      map.roomCreateMapFeature(MudMapper.tp_feature, room_id)
+    end
+  end
+  MudMapper.dbg("[tp] lockRoom + feature '" .. MudMapper.tp_feature .. "' на комнате id=" .. tostring(room_id))
+  return true
+end
+
+-- создать/получить телепорт-комнату по VNUM и пометить её
+function MudMapper.ensure_teleport_room(vnum, area_id, x, y, z)
+  local id = getRoomIDbyHash(tostring(vnum))
+  if not (id and id > 0) then
+    id = createRoomID()
+    addRoom(id)
+    setRoomName(id, "[" .. tostring(vnum) .. "] Телепорт")
+    setRoomIDbyHash(id, tostring(vnum))
+    setRoomArea(id, area_id or MudMapper.area_id("sowmud"))
+    -- ставим в ожидаемую позицию; при коллизии кладём справа от самой правой комнаты
+    local free = true
+    for _, rid in ipairs(getAreaRooms(area_id) or {}) do
+      if rid ~= id then
+        local rx, ry, rz = getRoomCoordinates(rid)
+        if rx == x and ry == y and rz == z then free = false break end
+      end
+    end
+    if free then
+      setRoomCoordinates(id, x, y, z)
+    else
+      MudMapper.place_in_area(id, area_id)
+    end
+  end
+  MudMapper.mark_tp(id)
+  return id
 end
 
 -- найти VNUM комнаты в направлении s по MSDP-выходам текущей комнаты
