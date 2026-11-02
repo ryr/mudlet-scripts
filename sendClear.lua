@@ -6,6 +6,9 @@
 -- Переменные состояния (сохраняются между вызовами триггеров и алиасов)
 local last_call_key = nil
 
+-- Метка времени (epoch), до которой вставка "очистить" отключена. 0 = очистка включена.
+clearDisabledUntil = clearDisabledUntil or 0
+
 -- Внутренняя функция для проверки уникальности (убирает дублирование кода)
 local function isDuplicate(...)
   local count = select('#', ...)
@@ -26,15 +29,22 @@ local function isDuplicate(...)
   return false
 end
 
+-- Временно отключает добавление "очистить" на seconds секунд (по умолчанию 10).
+-- Пример: disableClear() — выключить очистку на 10 секунд, disableClear(5) — на 5.
+-- Очистка включается автоматически, как только getEpoch() >= clearDisabledUntil.
+function disableClear(seconds)
+  clearDisabledUntil = getEpoch() + (tonumber(seconds) or 10)
+end
+
 -- 1. Функция с условным добавлением "очистить"
 function sendWithClear(...)
   if isDuplicate(...) then return end
   
   local args = {...}
-  -- Вставляем "очистить" только если antiBotLastSent равен 0
-  if antiBotLastSent == 0 then
+  -- Проверяем анти-бота и временное отключение очистки
+  if antiBotLastSent == 0 and getEpoch() >= clearDisabledUntil then
     table.insert(args, 1, "очистить")
-  else
+  elseif antiBotLastSent ~= 0 then
     echo(" ----------------------------- [ ПРОВЕРКА НА БОТА !!! ]")
   end
 
