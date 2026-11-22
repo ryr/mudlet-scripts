@@ -29,6 +29,7 @@ G.checkMode              = false
 G.checkQueue             = {}
 G.checkCurrent           = nil
 G.checkPendingGroup      = false
+G.brokenNow              = {}   -- [слот] = "имя #" — сломанные вещи текущего блока
 
 G.slotLabels = {
   [1]  = " <в дополнительном слоте>        ",
@@ -88,6 +89,20 @@ local function extractItemName(sLine)
   if name then return name end
   name = sLine:match("^ <[^>]+>%s+(.+)%s*$")
   return name
+end
+
+
+-- «#» отдельным словом сразу после названия — вещь сломана, нужен ремонт.
+-- «гномий шлем бацинет # *» → «гномий шлем бацинет #»
+local function extractBrokenName(sLine)
+  local rest = sLine:match("^ <[^>]+>%s+(.+)$")
+  if not rest then return nil end
+  local name, after = rest:match("^(.-)%s+#()")
+  if not name or name == "" then return nil end
+  local tail = rest:sub(after)
+  -- после «#» — конец строки или пробел: «кольцо #5» маркером не считаем
+  if tail ~= "" and not tail:match("^%s") then return nil end
+  return name .. " #"
 end
 
 
@@ -155,6 +170,19 @@ local function announceMissing(name, stuff)
     if not has18 then
       send("ггово " .. name .. ": " .. buildMissingMessage(name, 18))
     end
+  end
+end
+
+
+-- Сломанные вещи: «гг <игрок>: СЛОМАНО <слот> (<имя> #)» — только в чекстаф
+local function announceBroken(name, broken)
+  if not name or name == "" then return end
+  local slots = {}
+  for slot in pairs(broken or {}) do slots[#slots + 1] = slot end
+  table.sort(slots)  -- стабильный порядок: голова → шея → пояс → …
+  for _, slot in ipairs(slots) do
+    send("гг " .. name .. ": СЛОМАНО " ..
+      (G.slotMissMessages[slot] or ("слот " .. slot)) .. " (" .. broken[slot] .. ")")
   end
 end
 
@@ -236,6 +264,7 @@ function G.onIncoming(rawLine)
     if G.playerName ~= "" then
       if G.checkMode then
         announceMissing(G.playerName, G.stuff)
+        announceBroken(G.playerName, G.brokenNow)
       end
 
       -- Обновляем снимок: сохраняем СТАРЫЕ данные для пустых слотов
@@ -263,6 +292,7 @@ function G.onIncoming(rawLine)
     end
 
     G.stuff = {}
+    G.brokenNow = {}
     G.playerName = ""
     G.playerEquipmentCounter = 0
     G.lastPrintedEmpty = false
@@ -275,6 +305,7 @@ function G.onIncoming(rawLine)
     G.playerEquipmentCounter = 1
     G.playerName = name1
     G.stuff = {}
+    G.brokenNow = {}
     G.lastPrintedEmpty = false
     return
   end
@@ -284,6 +315,7 @@ function G.onIncoming(rawLine)
     G.playerEquipmentCounter = 1
     G.playerName = name2
     G.stuff = {}
+    G.brokenNow = {}
     G.lastPrintedEmpty = false
     return
   end
@@ -326,6 +358,8 @@ function G.onIncoming(rawLine)
   if G.slotNumber == G.playerEquipmentCounter and G.playerEquipmentCounter > 0 then
     local itemName = extractItemName(sLine) or true
     G.stuff[G.playerEquipmentCounter] = itemName
+    local broken = extractBrokenName(sLine)
+    if broken then G.brokenNow[G.playerEquipmentCounter] = broken end
     G.playerEquipmentCounter = G.playerEquipmentCounter + 1
     G.lastPrintedEmpty = false
     return
